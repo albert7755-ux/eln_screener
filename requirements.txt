@@ -5,3 +5,4 @@ plotly
 yfinance
 scipy
 openpyxl
+matplotlib
