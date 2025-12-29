@@ -6,11 +6,11 @@ import itertools
 from datetime import datetime, timedelta
 
 # --- 1. 基礎設定 ---
-st.set_page_config(page_title="ELN 全方位掃描 (V14.0 透明版)", layout="wide")
-st.title("🎯 ELN 結構型商品 - 數據透明化掃描")
+st.set_page_config(page_title="ELN 鎖定天期掃描 (V16.0)", layout="wide")
+st.title("🎯 ELN 結構型商品 - 鎖定 24 天期 IV 掃描")
 st.markdown("""
-本版本特別將 **IV 來源 (選擇權到期日)** 與 **財報原始數據 (PE/Margin/Debt)** 完整列出，
-讓您清楚知道分數是如何評估出來的。
+本版本簡化邏輯，直接鎖定市場上 **「最接近 24 天到期」** 的選擇權合約。
+不再進行理論合成，直接呈現市場真實報價。
 """)
 st.divider()
 
@@ -25,10 +25,26 @@ w_fund = st.sidebar.slider("財報權重", 0.0, 1.0, 0.2)
 w_analyst = st.sidebar.slider("法人權重", 0.0, 1.0, 0.2)
 w_trend = st.sidebar.slider("趨勢權重", 0.0, 1.0, 0.2)
 
+# 新增：讓您可以微調目標天數 (預設 24)
+target_days_input = st.sidebar.number_input("目標抓取天數 (Days)", min_value=7, max_value=90, value=24)
+
 basket_size = st.sidebar.selectbox("組籃檔數", [2, 3, 4], index=1)
-run_btn = st.sidebar.button("🔍 執行透明化掃描", type="primary")
+run_btn = st.sidebar.button(f"🔍 搜尋最接近 {target_days_input} 天的合約", type="primary")
 
 # --- 3. 核心函數 ---
+
+def get_atm_iv(ticker_obj, exp_date, current_price):
+    """取得指定到期日的 ATM Put IV"""
+    try:
+        opt = ticker_obj.option_chain(exp_date)
+        puts = opt.puts
+        if puts.empty: return None
+        # 找 ATM
+        puts['abs_diff'] = abs(puts['strike'] - current_price)
+        row = puts.sort_values('abs_diff').iloc[0]
+        return row['impliedVolatility']
+    except:
+        return None
 
 def get_detailed_data(ticker):
     data = {'Code': ticker}
@@ -47,26 +63,36 @@ def get_detailed_data(ticker):
         data['Trend_Score'] = 100 if current_price > ma200 else 0
     except: return None
 
-    # --- B. 波動率 (顯示來源) ---
+    # --- B. 波動率 (鎖定目標天數) ---
     try:
         iv_val = 0
         iv_source = "N/A"
         try:
             exp_dates = tk.options
-            if exp_dates:
-                # 找第一個到期日 (通常是最近月)
-                target_date = exp_dates[0]
-                opt = tk.option_chain(target_date)
-                puts = opt.puts
-                if not puts.empty:
-                    # 找 ATM Put
-                    puts['abs_diff'] = abs(puts['strike'] - current_price)
-                    row = puts.sort_values('abs_diff').iloc[0]
-                    iv_val = row['impliedVolatility']
-                    # 紀錄來源
-                    iv_source = f"Option ({target_date})"
+            today = datetime.now().date()
+            
+            # 1. 整理所有到期日與天數差
+            dates_info = []
+            for d_str in exp_dates:
+                d_date = datetime.strptime(d_str, "%Y-%m-%d").date()
+                days_diff = (d_date - today).days
+                if days_diff > 0: # 只看未來
+                    dates_info.append({'date': d_str, 'days': days_diff})
+            
+            if not dates_info: raise ValueError
+
+            # 2. 找出最接近 target_days_input (例如 24) 的合約
+            # 使用 min 函數找絕對值差最小的
+            closest_contract = min(dates_info, key=lambda x: abs(x['days'] - target_days_input))
+            
+            # 3. 抓取該合約的 IV
+            iv_val = get_atm_iv(tk, closest_contract['date'], data['Price'])
+            
+            # 顯示實際抓到的天數
+            iv_source = f"Option ({closest_contract['days']}d)"
             
             if iv_val == 0 or iv_val is None: raise ValueError
+
         except:
             # 降級使用歷史波動率
             log_ret = np.log(hist['Close'] / hist['Close'].shift(1))
@@ -75,11 +101,11 @@ def get_detailed_data(ticker):
             
         data['IV'] = f"{iv_val*100:.1f}%"
         data['Raw_IV'] = iv_val
-        data['IV_Source'] = iv_source # 新增欄位
+        data['IV_Source'] = iv_source 
     except:
         data['IV'] = "N/A"; data['Raw_IV'] = 0; data['IV_Source'] = "Error"
 
-    # --- C. 基本面 (顯示原始數據) ---
+    # --- C. 基本面 ---
     try:
         info = tk.info
         
@@ -94,7 +120,7 @@ def get_detailed_data(ticker):
         margin = info.get('profitMargins')
         debt = info.get('debtToEquity')
         
-        # 紀錄原始數據供顯示
+        # 紀錄原始數據
         data['Raw_PE'] = f"{pe:.1f}" if pe else "N/A"
         data['Raw_Margin'] = f"{margin*100:.1f}%" if margin else "N/A"
         data['Raw_Debt'] = f"{debt:.1f}%" if debt else "N/A"
@@ -126,7 +152,7 @@ if run_btn:
     ticker_list = [t.strip().upper() for t in tickers_input.split(',') if t.strip()]
     results = []
     
-    with st.spinner("正在解析 IV 來源與財報數據..."):
+    with st.spinner(f"正在搜尋最接近 {target_days_input} 天的選擇權合約..."):
         progress_bar = st.progress(0)
         for i, ticker in enumerate(ticker_list):
             d = get_detailed_data(ticker)
@@ -139,28 +165,24 @@ if run_btn:
         df = pd.DataFrame(results)
         df = df.sort_values('Total_Score', ascending=False).reset_index(drop=True)
         
-        st.subheader("📋 標的詳細透視表")
-        st.caption("向右滑動表格可查看詳細財報數字")
+        st.subheader(f"📋 標的詳細透視表 (目標: {target_days_input}天期 IV)")
         
-        # 設定顯示欄位 (加入詳細數據)
         cols = [
             'Code', 'Total_Score', 'Price', 'Trend', 
-            'IV', 'IV_Source', # 這裡顯示 IV 來源
+            'IV', 'IV_Source', # 顯示實際抓到的天數
             'Analyst', 
-            'Raw_PE', 'Raw_Margin', 'Raw_Debt' # 這裡顯示財報細節
+            'Raw_PE', 'Raw_Margin', 'Raw_Debt'
         ]
         
-        # 欄位重新命名 (中文友善)
         rename_map = {
             'Code': '代碼', 'Total_Score': '總分', 'Price': '股價',
-            'Trend': '趨勢', 'IV_Source': 'IV 來源日期',
+            'Trend': '趨勢', 'IV_Source': 'IV 合約天數',
             'Analyst': '法人評級',
             'Raw_PE': '本益比', 'Raw_Margin': '淨利率', 'Raw_Debt': '負債比'
         }
         
         display_df = df[cols].rename(columns=rename_map)
         
-        # 顏色樣式
         def highlight_score(val):
             color = '#d4edda' if val >= 75 else '#fff3cd' if val >= 50 else '#f8d7da'
             return f'background-color: {color}'
