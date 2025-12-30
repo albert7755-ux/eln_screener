@@ -5,8 +5,8 @@ import numpy as np
 import itertools
 from datetime import datetime
 
-# --- 1. 基礎設定 (必須放第一行) ---
-st.set_page_config(page_title="ELN 旗艦版 (V20.0)", layout="wide")
+# --- 1. 基礎設定 ---
+st.set_page_config(page_title="ELN 旗艦版 (V21.0)", layout="wide")
 
 # --- 2. 密碼保護機制 ---
 def check_password():
@@ -29,16 +29,21 @@ if not check_password():
     st.stop()
 
 # =========================================================
-# V20.0 主程式
+# V21.0 主程式
 # =========================================================
 
-st.title("🎯 ELN 結構型商品 - 旗艦選股 (數據修復版)")
-st.markdown("修正部分數據顯示為 `-` 的問題，並優化相關係數顯示介面。")
+st.title("🎯 ELN 結構型商品 - 旗艦選股 (自訂標的+負債比修正)")
+st.markdown("""
+本版本更新重點：
+1.  **標的更新**：移除 MSTR/PFE，新增 **AVGO (博通)** 與 **LLY (禮來)**。
+2.  **指標修正**：財務槓桿指標改為 **「負債比率 (總負債/總資產)」**。
+""")
 st.divider()
 
 # --- 3. 側邊欄 ---
 st.sidebar.header("1️⃣ 標的池")
-default_pool = "NVDA, TSLA, AAPL, MSFT, GOOG, AMD, MSTR, COIN, JPM, KO, MCD, XOM, PFE"
+# 更新預設清單：MSTR -> AVGO, PFE -> LLY
+default_pool = "NVDA, TSLA, AAPL, MSFT, GOOG, AMD, AVGO, COIN, JPM, KO, MCD, XOM, LLY"
 tickers_input = st.sidebar.text_area("股票代碼", value=default_pool, height=100)
 
 st.sidebar.header("2️⃣ 權重設定")
@@ -48,7 +53,7 @@ w_analyst = st.sidebar.slider("法人權重", 0.0, 1.0, 0.2)
 w_trend = st.sidebar.slider("趨勢權重", 0.0, 1.0, 0.2)
 
 basket_size = st.sidebar.selectbox("組籃檔數", [2, 3, 4], index=1)
-run_btn = st.sidebar.button("🔍 執行修復掃描", type="primary")
+run_btn = st.sidebar.button("🔍 執行掃描", type="primary")
 
 # --- 4. 核心函數 ---
 
@@ -90,7 +95,7 @@ def get_stock_data(ticker):
         data['Raw_Vol'] = hv_val
     except: return None 
 
-    # --- B. 基本面 (強力抓取修復) ---
+    # --- B. 基本面 ---
     try:
         info = tk.info
         
@@ -99,47 +104,63 @@ def get_stock_data(ticker):
         if rec:
             data['Analyst_Score'] = {'strong_buy':100, 'buy':80, 'overweight':70, 'hold':50, 'underweight':30, 'sell':10}.get(rec.lower(), 50)
         else:
-            data['Analyst_Score'] = 50 # 預設中性
+            data['Analyst_Score'] = 50 
             
         rating_change = get_latest_rating_change(tk)
         data['Rating_Change_Text'] = rating_change['text']
         data['Rating_Change_Type'] = rating_change['type']
         
-        # 2. 財報數據 (增加候補機制)
-        # PE: 優先找 Forward, 沒有就找 Trailing
+        # 2. 財報數據
         pe = info.get('forwardPE')
         if pe is None: pe = info.get('trailingPE')
         
         margin = info.get('profitMargins')
-        debt = info.get('debtToEquity')
-
-        # 格式化顯示 (若真的沒有，顯示 N/A)
+        
+        # --- [修正] 改為計算 總負債/總資產 (Debt Ratio) ---
+        total_debt = info.get('totalDebt')
+        total_assets = info.get('totalAssets')
+        
+        debt_ratio = None
+        if total_debt is not None and total_assets is not None and total_assets > 0:
+            debt_ratio = (total_debt / total_assets) * 100
+        
+        # 顯示欄位
         data['Raw_PE'] = f"{pe:.1f}" if pe else "N/A"
         data['Raw_Margin'] = f"{margin*100:.1f}%" if margin else "N/A"
-        data['Raw_Debt'] = f"{debt:.1f}%" if debt else "N/A"
+        data['Raw_Debt_Ratio'] = f"{debt_ratio:.1f}%" if debt_ratio is not None else "N/A"
         
-        # 評分
+        # --- 評分邏輯 ---
         fund_score = 0
+        
         # PE 分數
         if pe and 0 < pe < 35: fund_score += 40
-        elif pe is None: fund_score += 20 # 沒資料給一半
-        else: fund_score += 0 # 負值或太高不給分
+        elif pe is None: fund_score += 20
         
         # Margin 分數
         if margin and margin > 0.15: fund_score += 30
         elif margin is None: fund_score += 15
         
-        # D/E 分數
-        if debt:
-            if debt < 100: fund_score += 30
-            elif margin and margin > 0.2: fund_score += 20 # 現金牛豁免
-        elif debt is None:
+        # Debt Ratio 分數 (標準通常比 D/E 嚴格)
+        # < 60% 為優 (30分)
+        # < 80% 為尚可 (15分)
+        # 金融股 (如 JPM) 因存款算負債，通常會很高，這裡做個簡單豁免
+        if debt_ratio is not None:
+            if debt_ratio < 60: 
+                fund_score += 30
+            elif debt_ratio < 80:
+                # 如果負債略高但很賺錢 (Margin > 20%)，還是給分
+                if margin and margin > 0.2: fund_score += 20
+                else: fund_score += 15
+            else:
+                # > 80% 通常風險較高
+                fund_score += 0
+        else:
             fund_score += 15
             
         data['Fund_Score'] = fund_score
     except:
         data['Rating_Change_Text'] = "-"; data['Rating_Change_Type'] = 'none'
-        data['Raw_PE'] = "N/A"; data['Raw_Margin'] = "N/A"; data['Raw_Debt'] = "N/A"
+        data['Raw_PE'] = "N/A"; data['Raw_Margin'] = "N/A"; data['Raw_Debt_Ratio'] = "N/A"
         data['Fund_Score'] = 50; data['Analyst_Score'] = 50
 
     # --- C. 總分 ---
@@ -175,7 +196,7 @@ if run_btn:
     results = []
     price_cache = {} 
     
-    with st.spinner("正在掃描與修復數據..."):
+    with st.spinner("正在掃描與計算負債比率..."):
         progress_bar = st.progress(0)
         for i, ticker in enumerate(ticker_list):
             d = get_stock_data(ticker)
@@ -198,10 +219,10 @@ if run_btn:
             'Trend': '趨勢', 'HV30': 'HV30',
             'Rating_Change_Text': '最近評級變動',
             'Raw_PE': '本益比', 'Raw_Margin': '淨利率', 
-            'Raw_Debt': '負債權益比 (D/E)'
+            'Raw_Debt_Ratio': '負債比率 (Debt/Asset)' # ✅ 指標已更新
         }
         
-        display_cols = ['Code', 'Total_Score', 'Price', 'Trend', 'HV30', 'Rating_Change_Text', 'Raw_PE', 'Raw_Margin', 'Raw_Debt']
+        display_cols = ['Code', 'Total_Score', 'Price', 'Trend', 'HV30', 'Rating_Change_Text', 'Raw_PE', 'Raw_Margin', 'Raw_Debt_Ratio']
         
         def highlight_rating_change(s):
             colors = []
@@ -218,7 +239,7 @@ if run_btn:
             .format({'股價': "{:.2f}", '總分': "{:.1f}"}),
             use_container_width=True,
             column_config={
-                "最近評級變動": st.column_config.TextColumn(width="medium") # 防止這裡也被截斷
+                "最近評級變動": st.column_config.TextColumn(width="medium")
             }
         )
         
@@ -254,22 +275,19 @@ if run_btn:
             
             best_baskets = pd.DataFrame(basket_res).sort_values('Ranking_Score', ascending=False).head(5)
             
-            # 使用 Markdown 與 HTML 來解決 metric 截斷問題
             for i, row in best_baskets.iterrows():
                 corr_v = row['平均相關係數']
                 
-                # 設定顏色與文字
                 if corr_v > 0.7: 
-                    corr_color = "#f8d7da" # 紅底
+                    corr_color = "#f8d7da" 
                     corr_text = f"🔴 高度連動 ({corr_v:.2f})"
                 elif corr_v > 0.4: 
-                    corr_color = "#fff3cd" # 黃底
+                    corr_color = "#fff3cd" 
                     corr_text = f"🟡 中度連動 ({corr_v:.2f})"
                 else: 
-                    corr_color = "#d4edda" # 綠底
+                    corr_color = "#d4edda" 
                     corr_text = f"🟢 低度連動 ({corr_v:.2f}) ★條件優"
 
-                # 卡片式設計
                 st.markdown(f"""
                 <div style="
                     border: 1px solid #ddd; 
@@ -281,15 +299,15 @@ if run_btn:
                     <h4 style="margin: 0; color: #333;">🏅 推薦組合 {i+1}：{row['組合']}</h4>
                     <div style="display: flex; justify-content: space-between; margin-top: 10px;">
                         <div>
-                            <span style="font-size: 0.9em; color: #666;">平均評分 (體質)</span><br>
+                            <span style="font-size: 0.9em; color: #666;">平均評分</span><br>
                             <span style="font-size: 1.2em; font-weight: bold;">{row['平均評分']:.1f}</span>
                         </div>
                         <div>
-                            <span style="font-size: 0.9em; color: #666;">平均 HV30 (配息)</span><br>
+                            <span style="font-size: 0.9em; color: #666;">平均 HV30</span><br>
                             <span style="font-size: 1.2em; font-weight: bold;">{row['平均 HV30']*100:.1f}%</span>
                         </div>
                         <div style="background-color: {corr_color}; padding: 5px 10px; border-radius: 5px;">
-                            <span style="font-size: 0.9em; color: #666;">相關係數 (避險)</span><br>
+                            <span style="font-size: 0.9em; color: #666;">相關係數</span><br>
                             <span style="font-size: 1.1em; font-weight: bold;">{corr_text}</span>
                         </div>
                     </div>
