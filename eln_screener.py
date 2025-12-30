@@ -6,7 +6,7 @@ import itertools
 from datetime import datetime
 
 # --- 1. 基礎設定 ---
-st.set_page_config(page_title="ELN 旗艦版 (V21.0)", layout="wide")
+st.set_page_config(page_title="ELN 旗艦版 (V22.0)", layout="wide")
 
 # --- 2. 密碼保護機制 ---
 def check_password():
@@ -29,20 +29,19 @@ if not check_password():
     st.stop()
 
 # =========================================================
-# V21.0 主程式
+# V22.0 主程式
 # =========================================================
 
-st.title("🎯 ELN 結構型商品 - 旗艦選股 (自訂標的+負債比修正)")
+st.title("🎯 ELN 結構型商品 - 旗艦選股 (顯示優化版)")
 st.markdown("""
-本版本更新重點：
-1.  **標的更新**：移除 MSTR/PFE，新增 **AVGO (博通)** 與 **LLY (禮來)**。
-2.  **指標修正**：財務槓桿指標改為 **「負債比率 (總負債/總資產)」**。
+**V22.0 更新說明：**
+1.  **強力抓取負債比**：若摘要缺失，自動調閱資產負債表計算，解決 N/A 問題。
+2.  **介面優化**：強制加寬評級變動欄位，避免文字被遮擋。
 """)
 st.divider()
 
 # --- 3. 側邊欄 ---
 st.sidebar.header("1️⃣ 標的池")
-# 更新預設清單：MSTR -> AVGO, PFE -> LLY
 default_pool = "NVDA, TSLA, AAPL, MSFT, GOOG, AMD, AVGO, COIN, JPM, KO, MCD, XOM, LLY"
 tickers_input = st.sidebar.text_area("股票代碼", value=default_pool, height=100)
 
@@ -69,6 +68,8 @@ def get_latest_rating_change(ticker_obj):
         from_grade = latest['FromGrade'] if latest['FromGrade'] else "New"
         to_grade = latest['ToGrade']
         action_type = 'up' if 'up' in action else 'down' if 'down' in action else 'main'
+        # 縮短日期格式以節省空間
+        short_date = date_str[5:] # 只取 MM-DD
         return {'text': f"{date_str} [{firm}] {from_grade}->{to_grade}", 'type': action_type}
     except: return {'text': "-", 'type': 'none'}
 
@@ -110,16 +111,32 @@ def get_stock_data(ticker):
         data['Rating_Change_Text'] = rating_change['text']
         data['Rating_Change_Type'] = rating_change['type']
         
-        # 2. 財報數據
+        # 2. 財報數據 (PE)
         pe = info.get('forwardPE')
         if pe is None: pe = info.get('trailingPE')
         
         margin = info.get('profitMargins')
         
-        # --- [修正] 改為計算 總負債/總資產 (Debt Ratio) ---
+        # 3. 負債比率 (強力修復版)
         total_debt = info.get('totalDebt')
         total_assets = info.get('totalAssets')
         
+        # 備援機制：如果 info 裡沒有，去翻資產負債表
+        if total_debt is None or total_assets is None:
+            try:
+                bs = tk.balance_sheet
+                # 嘗試抓取最新的 Total Assets
+                if 'Total Assets' in bs.index:
+                    total_assets = bs.loc['Total Assets'].iloc[0]
+                
+                # 嘗試抓取最新的 Total Debt
+                if 'Total Debt' in bs.index:
+                    total_debt = bs.loc['Total Debt'].iloc[0]
+                elif 'Long Term Debt' in bs.index: # 有時候只有長債
+                    total_debt = bs.loc['Long Term Debt'].iloc[0]
+            except:
+                pass
+
         debt_ratio = None
         if total_debt is not None and total_assets is not None and total_assets > 0:
             debt_ratio = (total_debt / total_assets) * 100
@@ -131,29 +148,18 @@ def get_stock_data(ticker):
         
         # --- 評分邏輯 ---
         fund_score = 0
-        
-        # PE 分數
         if pe and 0 < pe < 35: fund_score += 40
         elif pe is None: fund_score += 20
         
-        # Margin 分數
         if margin and margin > 0.15: fund_score += 30
         elif margin is None: fund_score += 15
         
-        # Debt Ratio 分數 (標準通常比 D/E 嚴格)
-        # < 60% 為優 (30分)
-        # < 80% 為尚可 (15分)
-        # 金融股 (如 JPM) 因存款算負債，通常會很高，這裡做個簡單豁免
         if debt_ratio is not None:
-            if debt_ratio < 60: 
-                fund_score += 30
+            if debt_ratio < 60: fund_score += 30
             elif debt_ratio < 80:
-                # 如果負債略高但很賺錢 (Margin > 20%)，還是給分
                 if margin and margin > 0.2: fund_score += 20
                 else: fund_score += 15
-            else:
-                # > 80% 通常風險較高
-                fund_score += 0
+            else: fund_score += 0
         else:
             fund_score += 15
             
@@ -196,7 +202,7 @@ if run_btn:
     results = []
     price_cache = {} 
     
-    with st.spinner("正在掃描與計算負債比率..."):
+    with st.spinner("正在掃描與計算 (含資產負債表調閱)..."):
         progress_bar = st.progress(0)
         for i, ticker in enumerate(ticker_list):
             d = get_stock_data(ticker)
@@ -219,7 +225,7 @@ if run_btn:
             'Trend': '趨勢', 'HV30': 'HV30',
             'Rating_Change_Text': '最近評級變動',
             'Raw_PE': '本益比', 'Raw_Margin': '淨利率', 
-            'Raw_Debt_Ratio': '負債比率 (Debt/Asset)' # ✅ 指標已更新
+            'Raw_Debt_Ratio': '負債比率 (Debt/Asset)'
         }
         
         display_cols = ['Code', 'Total_Score', 'Price', 'Trend', 'HV30', 'Rating_Change_Text', 'Raw_PE', 'Raw_Margin', 'Raw_Debt_Ratio']
@@ -239,11 +245,17 @@ if run_btn:
             .format({'股價': "{:.2f}", '總分': "{:.1f}"}),
             use_container_width=True,
             column_config={
-                "最近評級變動": st.column_config.TextColumn(width="medium")
+                "最近評級變動": st.column_config.TextColumn(
+                    width="large", # 🔥 強制加寬
+                    help="顯示最近一次分析師評級變動。格式：日期 [機構] 原評級 -> 新評級"
+                ),
+                "負債比率 (Debt/Asset)": st.column_config.TextColumn(
+                    help="總負債 / 總資產。通常 < 60% 為穩健。"
+                )
             }
         )
         
-        # --- 智能組籃 (介面優化版) ---
+        # --- 智能組籃 ---
         st.divider()
         st.subheader(f"💡 AI 智能組籃 (考量相關係數)")
         
@@ -277,25 +289,18 @@ if run_btn:
             
             for i, row in best_baskets.iterrows():
                 corr_v = row['平均相關係數']
-                
                 if corr_v > 0.7: 
-                    corr_color = "#f8d7da" 
+                    corr_color = "#f8d7da"
                     corr_text = f"🔴 高度連動 ({corr_v:.2f})"
                 elif corr_v > 0.4: 
-                    corr_color = "#fff3cd" 
+                    corr_color = "#fff3cd"
                     corr_text = f"🟡 中度連動 ({corr_v:.2f})"
                 else: 
-                    corr_color = "#d4edda" 
+                    corr_color = "#d4edda"
                     corr_text = f"🟢 低度連動 ({corr_v:.2f}) ★條件優"
 
                 st.markdown(f"""
-                <div style="
-                    border: 1px solid #ddd; 
-                    border-radius: 10px; 
-                    padding: 15px; 
-                    margin-bottom: 10px; 
-                    background-color: #f9f9f9;
-                ">
+                <div style="border: 1px solid #ddd; border-radius: 10px; padding: 15px; margin-bottom: 10px; background-color: #f9f9f9;">
                     <h4 style="margin: 0; color: #333;">🏅 推薦組合 {i+1}：{row['組合']}</h4>
                     <div style="display: flex; justify-content: space-between; margin-top: 10px;">
                         <div>
