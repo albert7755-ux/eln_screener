@@ -6,7 +6,7 @@ import itertools
 from datetime import datetime
 
 # --- 1. 基礎設定 ---
-st.set_page_config(page_title="ELN 旗艦版 (V22.0)", layout="wide")
+st.set_page_config(page_title="ELN 旗艦版 (V23.0)", layout="wide")
 
 # --- 2. 密碼保護機制 ---
 def check_password():
@@ -29,15 +29,34 @@ if not check_password():
     st.stop()
 
 # =========================================================
-# V22.0 主程式
+# V23.0 主程式
 # =========================================================
 
-st.title("🎯 ELN 結構型商品 - 旗艦選股 (顯示優化版)")
-st.markdown("""
-**V22.0 更新說明：**
-1.  **強力抓取負債比**：若摘要缺失，自動調閱資產負債表計算，解決 N/A 問題。
-2.  **介面優化**：強制加寬評級變動欄位，避免文字被遮擋。
-""")
+st.title("🎯 ELN 結構型商品 - 旗艦選股系統")
+
+# --- 🔥 新增：工具介紹與說明書 (User Guide) ---
+with st.expander("📖 系統使用指南與指標說明 (點擊展開/收合)", expanded=True):
+    st.markdown("""
+    ### 🛠️ 工具設計邏輯
+    本系統專為 **ELN/FCN (股權連結商品)** 設計，協助挑選「高配息且體質穩健」的標的組合。
+    透過 **波動率 (配息來源)** 與 **基本面 (安全氣囊)** 的雙重過濾，降低賺了利息賠了價差的風險。
+
+    ---
+    
+    ### 📊 關鍵指標解讀
+    | 指標名稱 | 英文代號 | 意義與銷售話術 | 評分標準 |
+    | :--- | :--- | :--- | :--- |
+    | **歷史波動率** | **HV30** | **配息的來源**。代表過去30天股價的活潑程度。數值越高，銀行賣選擇權收到的權利金越高，**客戶拿到的 Coupon 就越好**。 | 越高分越高 (主要權重) |
+    | **負債比率** | **Debt Ratio** | **安全氣囊**。公式為 `總負債 / 總資產`。數值越低，代表公司欠錢越少，在升息環境下越不容易倒閉。 | < 60% 優；> 80% 扣分 |
+    | **法人評級** | **Rating** | **跟著大人走**。綜合華爾街投行 (如高盛、大摩) 的共識。若顯示 **🟢 升評**，代表近期有大利多；**🔴 降評** 則需避開。 | Buy/Strong Buy 加分 |
+    | **相關係數** | **Correlation** | **組籃優化關鍵**。若兩檔股票連動性低 (如科技+傳產)，**避險成本較低，銀行能開出更好的條件**。 | 越低越好 |
+
+    ### 💡 如何使用？
+    1. **左側輸入代碼**：輸入您想觀察的美股代碼 (如 NVDA, AAPL)。
+    2. **調整權重**：依據客戶屬性 (保守/積極) 調整右側滑桿。
+    3. **執行掃描**：系統將自動抓取最新數據，並推薦最佳的 2~4 檔組合。
+    """)
+
 st.divider()
 
 # --- 3. 側邊欄 ---
@@ -68,8 +87,7 @@ def get_latest_rating_change(ticker_obj):
         from_grade = latest['FromGrade'] if latest['FromGrade'] else "New"
         to_grade = latest['ToGrade']
         action_type = 'up' if 'up' in action else 'down' if 'down' in action else 'main'
-        # 縮短日期格式以節省空間
-        short_date = date_str[5:] # 只取 MM-DD
+        short_date = date_str[5:] 
         return {'text': f"{date_str} [{firm}] {from_grade}->{to_grade}", 'type': action_type}
     except: return {'text': "-", 'type': 'none'}
 
@@ -111,42 +129,32 @@ def get_stock_data(ticker):
         data['Rating_Change_Text'] = rating_change['text']
         data['Rating_Change_Type'] = rating_change['type']
         
-        # 2. 財報數據 (PE)
+        # 2. 財報
         pe = info.get('forwardPE')
         if pe is None: pe = info.get('trailingPE')
-        
         margin = info.get('profitMargins')
         
-        # 3. 負債比率 (強力修復版)
+        # 3. 負債比 (強力修復)
         total_debt = info.get('totalDebt')
         total_assets = info.get('totalAssets')
         
-        # 備援機制：如果 info 裡沒有，去翻資產負債表
         if total_debt is None or total_assets is None:
             try:
                 bs = tk.balance_sheet
-                # 嘗試抓取最新的 Total Assets
-                if 'Total Assets' in bs.index:
-                    total_assets = bs.loc['Total Assets'].iloc[0]
-                
-                # 嘗試抓取最新的 Total Debt
-                if 'Total Debt' in bs.index:
-                    total_debt = bs.loc['Total Debt'].iloc[0]
-                elif 'Long Term Debt' in bs.index: # 有時候只有長債
-                    total_debt = bs.loc['Long Term Debt'].iloc[0]
-            except:
-                pass
+                if 'Total Assets' in bs.index: total_assets = bs.loc['Total Assets'].iloc[0]
+                if 'Total Debt' in bs.index: total_debt = bs.loc['Total Debt'].iloc[0]
+                elif 'Long Term Debt' in bs.index: total_debt = bs.loc['Long Term Debt'].iloc[0]
+            except: pass
 
         debt_ratio = None
         if total_debt is not None and total_assets is not None and total_assets > 0:
             debt_ratio = (total_debt / total_assets) * 100
         
-        # 顯示欄位
         data['Raw_PE'] = f"{pe:.1f}" if pe else "N/A"
         data['Raw_Margin'] = f"{margin*100:.1f}%" if margin else "N/A"
         data['Raw_Debt_Ratio'] = f"{debt_ratio:.1f}%" if debt_ratio is not None else "N/A"
         
-        # --- 評分邏輯 ---
+        # --- 評分 ---
         fund_score = 0
         if pe and 0 < pe < 35: fund_score += 40
         elif pe is None: fund_score += 20
@@ -160,8 +168,7 @@ def get_stock_data(ticker):
                 if margin and margin > 0.2: fund_score += 20
                 else: fund_score += 15
             else: fund_score += 0
-        else:
-            fund_score += 15
+        else: fund_score += 15
             
         data['Fund_Score'] = fund_score
     except:
@@ -217,7 +224,6 @@ if run_btn:
         df = pd.DataFrame(results)
         df = df.sort_values('Total_Score', ascending=False).reset_index(drop=True)
         
-        # --- 個股列表 ---
         st.subheader("📋 個股掃描結果")
         
         rename_map = {
@@ -246,8 +252,8 @@ if run_btn:
             use_container_width=True,
             column_config={
                 "最近評級變動": st.column_config.TextColumn(
-                    width="large", # 🔥 強制加寬
-                    help="顯示最近一次分析師評級變動。格式：日期 [機構] 原評級 -> 新評級"
+                    width="large", 
+                    help="顯示最近一次分析師評級變動"
                 ),
                 "負債比率 (Debt/Asset)": st.column_config.TextColumn(
                     help="總負債 / 總資產。通常 < 60% 為穩健。"
@@ -255,7 +261,6 @@ if run_btn:
             }
         )
         
-        # --- 智能組籃 ---
         st.divider()
         st.subheader(f"💡 AI 智能組籃 (考量相關係數)")
         
@@ -290,14 +295,11 @@ if run_btn:
             for i, row in best_baskets.iterrows():
                 corr_v = row['平均相關係數']
                 if corr_v > 0.7: 
-                    corr_color = "#f8d7da"
-                    corr_text = f"🔴 高度連動 ({corr_v:.2f})"
+                    corr_color = "#f8d7da"; corr_text = f"🔴 高度連動 ({corr_v:.2f})"
                 elif corr_v > 0.4: 
-                    corr_color = "#fff3cd"
-                    corr_text = f"🟡 中度連動 ({corr_v:.2f})"
+                    corr_color = "#fff3cd"; corr_text = f"🟡 中度連動 ({corr_v:.2f})"
                 else: 
-                    corr_color = "#d4edda"
-                    corr_text = f"🟢 低度連動 ({corr_v:.2f}) ★條件優"
+                    corr_color = "#d4edda"; corr_text = f"🟢 低度連動 ({corr_v:.2f}) ★條件優"
 
                 st.markdown(f"""
                 <div style="border: 1px solid #ddd; border-radius: 10px; padding: 15px; margin-bottom: 10px; background-color: #f9f9f9;">
