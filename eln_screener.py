@@ -1,4 +1,41 @@
 import streamlit as st
+
+# --- 0. 登入檢查函式 (放在最上面) ---
+def check_password():
+    """Returns `True` if the user had the correct password."""
+
+    # 1. 檢查 Session State 中是否已經標記為登入成功
+    if st.session_state.get('password_correct', False):
+        return True
+
+    # 2. 顯示輸入框
+    st.header("🔒 請輸入密碼以存取系統")
+    password_input = st.text_input("Password", type="password")
+
+    # 3. 驗證邏輯
+    if st.button("登入"):
+        # 檢查密碼是否與 Secrets 設定的一致
+        if password_input == st.secrets["PASSWORD"]:
+            st.session_state['password_correct'] = True
+            st.rerun()  # 密碼對了就重新執行，刷新頁面
+        else:
+            st.error("❌ 密碼錯誤，請重試")
+
+    return False
+
+# --- 程式進入點 ---
+st.set_page_config(page_title="您的應用程式名稱", layout="wide")
+
+# ★★★ 這裡就是關鍵：如果密碼不對，程式就停在這，不往下執行 ★★★
+if not check_password():
+    st.stop()  # 停止執行後面的程式碼
+
+# ==========================================
+# 下面這裡開始放您原本的程式碼 (ELN 或 債券 的主程式)
+# ==========================================
+st.title("📊 歡迎使用系統...")
+# ... (您原本的所有代碼) ...
+import streamlit as st
 import pandas as pd
 import yfinance as yf
 import numpy as np
